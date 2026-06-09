@@ -70,7 +70,16 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 *Aliases are stored as a list of strings. How will you check if the normalized input matches any alias in the list? Write your approach in pseudocode or plain English.*
 
 ```
-[your answer here]
+Iterate over every plant in _plant_db. For each one, lowercase its aliases on
+the fly and test membership:
+
+    if normalized in (alias.lower() for alias in plant["aliases"]):
+        return {"found": True, "plant": plant}
+
+A generator expression keeps it case-insensitive without building a throwaway
+list. This is O(total aliases) per lookup — fine for 15 plants. If the DB grew
+to thousands, I'd precompute a flat {alias_lower: slug} index once at module
+load so each lookup is O(1) instead of scanning every plant.
 ```
 
 ---
@@ -80,7 +89,16 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 *When a plant isn't found, the agent will read your message and use it to decide what to tell the user. Write the exact string you'll return — make it useful to the agent, not just to a human reading logs.*
 
 ```
-[your answer here]
+"'<name>' is not in the plant care database. Do not invent specific care
+numbers for it. Acknowledge to the user that this plant isn't in your
+database, then offer general houseplant guidance based on what they describe
+(light, watering, symptoms) and suggest they confirm specifics against a
+dedicated source."
+
+This is an instruction to the agent, not a log line. It (a) states the fact,
+(b) forbids hallucinating specifics — the key grounding guardrail — and
+(c) tells the agent what useful thing to do instead. The behavior is enforced
+in two layers: this message AND a matching rule in the system prompt.
 ```
 
 ---
@@ -91,17 +109,24 @@ likely match for clean user input. Aliases are the broadest net, so they go last
 
 **Test: does `"devil's ivy"` return the pothos entry?**
 ```
-[yes / no — if no, describe what happened]
+Yes — matches via the alias list, returns found: True with display_name "Pothos".
 ```
 
 **Test: does `"SNAKE PLANT"` return the snake plant entry?**
 ```
-[yes / no — if no, describe what happened]
+Yes — " SNAKE PLANT " (with stray whitespace) also works; strip().lower()
+normalizes to "snake plant", which matches the display name. "sansevieria"
+(scientific-ish alias) also resolves to Snake Plant.
 ```
 
 **One edge case you discovered while implementing:**
 ```
-[your answer here]
+The slug keys use underscores ("snake_plant") but users type spaces
+("snake plant"). The space form never matches the direct key — it only
+resolves because "Snake Plant" is also the display_name. So the display-name
+and alias passes aren't redundant niceties; they're what makes natural input
+work at all. A plant whose slug differed from its display name with no alias
+covering the spaced form would be unreachable by normal typing.
 ```
 
 ---
@@ -183,12 +208,64 @@ The full season dict from `_season_data`, plus a `detected_season` boolean. Exam
 
 **Test: does calling with `season=None` return the correct season for the current month?**
 ```
-Current month: [month]
-Expected season: [season]
-Returned season: [season]
+Current month: 6 (June)
+Expected season: summer
+Returned season: Summer (detected_season: True)
 ```
 
 **Test: does calling with `season="winter"` return winter data regardless of the current month?**
 ```
-[yes / no]
+Yes — returns Winter data with detected_season: False, even though it's
+currently June. Invalid strings (e.g. "monsoon") fall back to auto-detection.
+```
+
+---
+
+## Function 3: `get_plant_list()`  *(optional challenge)*
+
+### Input / Output Contract
+
+**Inputs:** none.
+
+**Output:** `dict`
+
+```python
+{
+    "count": 15,
+    "plants": [
+        {"display_name": "Pothos", "difficulty": "easy"},
+        {"display_name": "Snake Plant", "difficulty": "easy"},
+        ...
+    ],
+}
+```
+
+### Purpose
+
+Answers questions about the collection as a whole rather than a single named
+plant — "what plants do you know about?", "what's a good beginner plant?".
+Without this, the agent can only look plants up by name and has no way to
+enumerate or filter by difficulty.
+
+### Design decisions
+
+- **Returns name + difficulty only**, not full care records. The agent uses it
+  to *survey* the catalog or pick a beginner plant; if the user then drills
+  into one, it calls `lookup_plant` for the details. Keeping the payload small
+  avoids flooding the context with 15 full entries.
+- **Tool description** steers the model to use it for broad/collection
+  questions and to prefer `lookup_plant` for specific named plants, so the two
+  tools don't compete.
+- Registered in `TOOL_DEFINITIONS` (empty `parameters`) and routed in
+  `dispatch_tool`.
+
+### Implementation Notes
+
+```
+"What plants do you know about?" → get_plant_list({}) → agent lists all 15.
+"What's a good beginner plant?"  → get_plant_list({}) → agent recommends the
+   "easy" ones (Pothos, Snake Plant, ZZ Plant...).
+Note: with empty-parameter tools, llama-3.3 on Groq more often emits the
+malformed tool syntax that trips 'tool_use_failed' — the retry wrapper in
+agent.py covers it.
 ```

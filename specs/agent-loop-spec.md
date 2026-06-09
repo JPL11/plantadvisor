@@ -122,7 +122,21 @@ for tool_call in assistant_message.tool_calls:
 *The loop should stop when: (a) the LLM returns a response with no tool calls, OR (b) the MAX_TOOL_ROUNDS limit is reached. Describe how you will detect each condition and what you will return in each case.*
 
 ```
-[your answer here]
+The loop is a `for _ in range(MAX_TOOL_ROUNDS)`.
+
+(a) No tool calls: after each API call, check `assistant_message.tool_calls`.
+    If falsy, the LLM has produced a final answer — return
+    `assistant_message.content` immediately, exiting the loop.
+
+(b) Limit reached: if the for-loop runs all MAX_TOOL_ROUNDS iterations without
+    hitting (a), fall through and make ONE more call with NO tools attached.
+    This forces the model to answer from what it has already gathered instead
+    of requesting yet another tool. Return that content, or a friendly
+    fallback string if it's somehow empty (the contract is: never return "").
+
+Robustness: the whole loop is wrapped in try/except so a transient API error
+returns a readable apology rather than crashing the turn. The completion call
+is also retried on Groq's intermittent 'tool_use_failed' parse error.
 ```
 
 ---
@@ -132,7 +146,12 @@ for tool_call in assistant_message.tool_calls:
 *Once the loop exits because there are no more tool calls, how do you extract the text content from the response object? What field holds the string you should return?*
 
 ```
-[your answer here]
+response.choices[0].message.content
+
+choices[0] is the first (and only, since n defaults to 1) completion. Its
+.message is the assistant message object; .content is the generated text. On a
+final answer this is a non-empty string and tool_calls is None — the inverse
+of a tool-requesting turn, where content is None and tool_calls is populated.
 ```
 
 ---
@@ -144,20 +163,34 @@ for tool_call in assistant_message.tool_calls:
 **Trace of a working agent turn (what tools were called and in what order):**
 
 ```
-Query: "How should I care for my calathea?"
-Round 1 tool call: [tool name, args]
-Round 2 tool call: [tool name, args] (if any)
-Final response: [brief description]
+Query: "How should I water my monstera this time of year?"
+Round 1 tool calls: lookup_plant({'plant_name': 'monstera'})
+                    get_seasonal_conditions({})   ← both requested in one round
+Round 2: no tool calls — LLM returns the final answer
+Final response: cites Monstera's "every 1–2 weeks" watering and adjusts it for
+the detected summer season ("water more frequently"). Both tools, connected.
 ```
 
 **What happens when you ask about a plant that isn't in the database?**
 
 ```
-[describe the behavior you observed]
+"How do I care for my bird of paradise?" → lookup_plant returns found: False
+with the guardrail message. The agent acknowledges the plant isn't in the
+database and offers general tropical-plant guidance WITHOUT inventing specific
+watering numbers — graceful degradation, driven by the not-found message plus
+the matching system-prompt rule.
 ```
 
 **One thing about the tool call API that surprised you:**
 
 ```
-[your answer here]
+The model can request MULTIPLE tools in a single assistant message (monstera
+fired lookup_plant and get_seasonal_conditions together), so the inner loop
+must iterate over assistant_message.tool_calls and append a tool result for
+each — appending one is not enough.
+
+Also surprising: llama-3.3 on Groq intermittently emits malformed tool syntax
+(e.g. `<function=lookup_plant{...}</function>`) that the API rejects as
+'tool_use_failed'. It's non-deterministic, so a plain retry of the same
+request fixes it — worth knowing this is a real-world rough edge of tool use.
 ```

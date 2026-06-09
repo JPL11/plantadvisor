@@ -1,7 +1,7 @@
 import json
 from groq import Groq
 from config import GROQ_API_KEY, LLM_MODEL, MAX_TOOL_ROUNDS
-from tools import lookup_plant, get_seasonal_conditions
+from tools import lookup_plant, get_seasonal_conditions, get_plant_list
 
 _client = Groq(api_key=GROQ_API_KEY)
 
@@ -58,6 +58,19 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_plant_list",
+            "description": (
+                "List every plant in the database with its name and difficulty level. "
+                "Use this for broad questions about the collection as a whole — e.g. "
+                "'what plants do you know about?' or 'what's a good beginner plant?' — "
+                "rather than questions about one specific named plant."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 # ──────────────────────────────────────────────
@@ -69,8 +82,13 @@ SYSTEM_PROMPT = (
     "Help users care for their houseplants by looking up specific plant information "
     "and current seasonal conditions using your available tools.\n\n"
     "Always use your tools to look up plant-specific information before answering — "
-    "don't rely on your general knowledge alone. If a plant isn't in your database, "
-    "say so clearly and offer general guidance based on what the user describes.\n\n"
+    "don't rely on your general knowledge alone. For season-specific questions "
+    "(anything mentioning a season or 'this time of year'), call get_seasonal_conditions "
+    "in addition to looking up the plant, and connect the two in your answer.\n\n"
+    "When lookup_plant returns found: False, do NOT invent specific care instructions "
+    "or numbers for that plant. Clearly acknowledge it isn't in your database, then "
+    "offer general guidance for that type of plant based on what the user describes "
+    "and suggest where they might confirm the specifics.\n\n"
     "Keep your advice practical and specific. Cite the source of your information "
     "when you have it (e.g., 'According to the care data for your monstera...')."
 )
@@ -90,6 +108,8 @@ def dispatch_tool(tool_name: str, tool_args: dict) -> str:
         result = lookup_plant(tool_args["plant_name"])
     elif tool_name == "get_seasonal_conditions":
         result = get_seasonal_conditions(tool_args.get("season"))
+    elif tool_name == "get_plant_list":
+        result = get_plant_list()
     else:
         result = {"error": f"Unknown tool: {tool_name}"}
     print(f"  ← Result: {json.dumps(result)[:120]}{'...' if len(json.dumps(result)) > 120 else ''}")
@@ -99,6 +119,25 @@ def dispatch_tool(tool_name: str, tool_args: dict) -> str:
 # ──────────────────────────────────────────────
 # Agent loop
 # ──────────────────────────────────────────────
+
+def _create_with_retry(retries: int = 2, **kwargs):
+    """
+    Wrapper around the Groq completions call.
+
+    llama-3.3 on Groq intermittently emits malformed tool-call syntax that the
+    API rejects with code 'tool_use_failed'. The bad output is non-deterministic,
+    so simply re-issuing the identical request usually succeeds. We retry only
+    that specific error and let everything else propagate.
+    """
+    for attempt in range(retries + 1):
+        try:
+            return _client.chat.completions.create(model=LLM_MODEL, **kwargs)
+        except Exception as exc:
+            if "tool_use_failed" in str(exc) and attempt < retries:
+                print(f"  ↻ Retrying after tool_use_failed (attempt {attempt + 1})")
+                continue
+            raise
+
 
 def run_agent(user_message: str, history: list) -> str:
     """
@@ -128,4 +167,55 @@ def run_agent(user_message: str, history: list) -> str:
 
     Before writing code, complete specs/agent-loop-spec.md.
     """
-    return "🌱 Agent not yet implemented. Complete Milestone 2 to activate the Plant Advisor."
+    # 1. Build the messages list: system prompt + replayed history + new message.
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for user_msg, assistant_msg in history:
+        messages.append({"role": "user", "content": user_msg})
+        if assistant_msg:
+            messages.append({"role": "assistant", "content": assistant_msg})
+    messages.append({"role": "user", "content": user_message})
+
+    # 2. Tool-calling loop, capped at MAX_TOOL_ROUNDS to prevent runaway loops.
+    #    Wrapped so a transient API error never crashes the turn — the contract
+    #    is that run_agent always returns a user-readable string.
+    try:
+        for _ in range(MAX_TOOL_ROUNDS):
+            response = _create_with_retry(
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="auto",
+            )
+            assistant_message = response.choices[0].message
+
+            # Exit condition (a): no tool calls means the LLM has its final answer.
+            if not assistant_message.tool_calls:
+                return assistant_message.content
+
+            # Assistant message MUST be appended before its tool results so each
+            # tool_call_id can be matched to the request that produced it.
+            messages.append(assistant_message)
+            for tool_call in assistant_message.tool_calls:
+                tool_name = tool_call.function.name
+                # Some models emit "null" or "" for no-argument tool calls —
+                # coerce to an empty dict so dispatch_tool gets a mapping.
+                tool_args = json.loads(tool_call.function.arguments or "{}") or {}
+                tool_result = dispatch_tool(tool_name, tool_args)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result,
+                })
+
+        # Exit condition (b): hit MAX_TOOL_ROUNDS. Make one final call WITHOUT
+        # tools so the LLM answers from what it gathered instead of looping.
+        final = _create_with_retry(messages=messages)
+        return final.choices[0].message.content or (
+            "I gathered some information but couldn't quite put together a "
+            "complete answer. Could you try rephrasing your question?"
+        )
+    except Exception as exc:
+        print(f"  ⚠️  Agent error: {exc}")
+        return (
+            "Sorry — I ran into a problem while looking that up. Please try "
+            "asking again, ideally about one plant at a time."
+        )

@@ -52,10 +52,29 @@ def lookup_plant(plant_name: str) -> dict:
 
     Before writing code, complete the lookup_plant section of specs/tool-functions-spec.md.
     """
+    normalized = plant_name.strip().lower()
+
+    # 1. Direct key match — O(1) dict access, the fastest path.
+    if normalized in _plant_db:
+        return {"found": True, "plant": _plant_db[normalized]}
+
+    # 2. Display name match, then 3. alias match — both case-insensitive.
+    for plant in _plant_db.values():
+        if plant["display_name"].lower() == normalized:
+            return {"found": True, "plant": plant}
+        if normalized in (alias.lower() for alias in plant["aliases"]):
+            return {"found": True, "plant": plant}
+
     return {
         "found": False,
-        "name": plant_name,
-        "message": "Plant lookup not yet implemented. Complete Milestone 1.",
+        "name": normalized,
+        "message": (
+            f"'{plant_name}' is not in the plant care database. Do not invent "
+            "specific care numbers for it. Acknowledge to the user that this "
+            "plant isn't in your database, then offer general houseplant "
+            "guidance based on what they describe (light, watering, symptoms) "
+            "and suggest they confirm specifics against a dedicated source."
+        ),
     }
 
 
@@ -84,3 +103,18 @@ def get_seasonal_conditions(season: str | None = None) -> dict:
     result = dict(_season_data[season_key])
     result["detected_season"] = detected
     return result
+
+
+def get_plant_list() -> dict:
+    """
+    Return the names and difficulty levels of every plant in the database.
+
+    Optional challenge tool. Use this to answer broad questions like "what
+    plants do you know about?" or "what's a good beginner plant?" — questions
+    that ask about the database as a whole rather than one named plant.
+    """
+    plants = [
+        {"display_name": plant["display_name"], "difficulty": plant["difficulty"]}
+        for plant in _plant_db.values()
+    ]
+    return {"count": len(plants), "plants": plants}
