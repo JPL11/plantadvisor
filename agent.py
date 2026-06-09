@@ -82,9 +82,18 @@ SYSTEM_PROMPT = (
     "Help users care for their houseplants by looking up specific plant information "
     "and current seasonal conditions using your available tools.\n\n"
     "Always use your tools to look up plant-specific information before answering — "
-    "don't rely on your general knowledge alone. For season-specific questions "
-    "(anything mentioning a season or 'this time of year'), call get_seasonal_conditions "
-    "in addition to looking up the plant, and connect the two in your answer.\n\n"
+    "don't rely on your general knowledge alone.\n\n"
+    "Answer every part of a multi-part question. If the user asks what a plant "
+    "is AND how to care for it, open with one or two sentences identifying the "
+    "plant (type, e.g. succulent/fern/tropical, and a defining trait drawn from "
+    "its care data), THEN give the care guidance.\n\n"
+    "Seasonal advice: each plant's care data has its own 'seasonal_notes' — use "
+    "those for season adjustments to a SPECIFIC plant, because they're tailored "
+    "to it. The get_seasonal_conditions tool gives GENERIC, all-plant guidance; "
+    "only call it for general seasonal questions or plants not in the database, "
+    "and never let its generic advice override or contradict a plant's own data "
+    "(e.g. do not tell the user to fertilize a plant whose data says it rarely "
+    "needs feeding). When the two disagree, the plant's own data wins.\n\n"
     "When lookup_plant returns found: False, do NOT invent specific care instructions "
     "or numbers for that plant. Clearly acknowledge it isn't in your database, then "
     "offer general guidance for that type of plant based on what the user describes "
@@ -168,11 +177,23 @@ def run_agent(user_message: str, history: list) -> str:
     Before writing code, complete specs/agent-loop-spec.md.
     """
     # 1. Build the messages list: system prompt + replayed history + new message.
+    #
+    # Gradio's ChatInterface(type="messages") passes history as a list of
+    # {"role", "content", ...} dicts (it may also carry a "metadata" key). We
+    # also tolerate the legacy [user, assistant] pair format for safety.
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for user_msg, assistant_msg in history:
-        messages.append({"role": "user", "content": user_msg})
-        if assistant_msg:
-            messages.append({"role": "assistant", "content": assistant_msg})
+    for turn in history:
+        if isinstance(turn, dict):
+            if turn.get("content"):
+                messages.append({
+                    "role": turn["role"],
+                    "content": turn["content"],
+                })
+        else:  # legacy [user_msg, assistant_msg] pair
+            user_msg, assistant_msg = turn
+            messages.append({"role": "user", "content": user_msg})
+            if assistant_msg:
+                messages.append({"role": "assistant", "content": assistant_msg})
     messages.append({"role": "user", "content": user_message})
 
     # 2. Tool-calling loop, capped at MAX_TOOL_ROUNDS to prevent runaway loops.

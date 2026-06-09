@@ -37,19 +37,27 @@ The agent's final text response for this turn. Should never be empty — if some
 ### Messages list structure
 
 The messages list must start with the system prompt, then replay the conversation
-history, then add the new user message. Gradio history is a list of `[user, assistant]`
-pairs — convert each pair to two API-format dicts:
+history, then add the new user message.
+
+⚠️ Format note: `app.py` uses `gr.ChatInterface(type="messages")`, so Gradio
+passes `history` as a list of `{"role", "content", ...}` dicts (it may also
+include a `"metadata"` key) — NOT `[user, assistant]` pairs. The pre-filled
+pair-unpacking code below crashes on the FIRST follow-up question with
+"too many values to unpack" (the first question works only because history is
+empty). Consume the dicts directly instead:
 
 ```python
 messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-for user_msg, assistant_msg in history:
-    messages.append({"role": "user", "content": user_msg})
-    if assistant_msg:
-        messages.append({"role": "assistant", "content": assistant_msg})
+for turn in history:
+    if turn.get("content"):
+        messages.append({"role": turn["role"], "content": turn["content"]})
 
 messages.append({"role": "user", "content": user_message})
 ```
+
+(The implementation also keeps a fallback branch for the legacy
+`[user, assistant]` pair format, in case `type="messages"` is ever removed.)
 
 ---
 
