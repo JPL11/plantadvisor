@@ -86,7 +86,7 @@ Plant Advisor opens in your browser with a plant-list sidebar and example questi
 ## Project Structure
 
 ```
-ai201-lab2-plantadvisor-starter/
+plantadvisor/
 ├── app.py              # Gradio UI: chat, plant sidebar, example questions
 ├── config.py           # GROQ_API_KEY, LLM_MODEL, MAX_TOOL_ROUNDS, DATA_PATH
 ├── agent.py            # Tool schemas, system prompt, dispatch, run_agent() loop
